@@ -2,6 +2,8 @@
 
 MCP (Model Context Protocol) server para integração com o Zoom Team Chat. Permite que assistentes AI (Claude Code, Claude Desktop, etc.) enviem mensagens e interajam com canais do Zoom.
 
+> **Credenciais são pessoais.** Cada pessoa usa seu próprio App OAuth no Zoom Marketplace. Nenhuma credencial está incluída neste repositório.
+
 ## Funcionalidades
 
 - **Mensagens**: enviar mensagens em canais e chats
@@ -11,10 +13,12 @@ MCP (Model Context Protocol) server para integração com o Zoom Team Chat. Perm
 ## Pré-requisitos
 
 - Node.js 18+
-- Conta Zoom com acesso ao Marketplace
-- App OAuth criado no [Zoom Marketplace](https://marketplace.zoom.us)
+- Conta Zoom
+- App OAuth criado no [Zoom Marketplace](https://marketplace.zoom.us) (veja passo 2)
 
-## Instalação
+## Como usar
+
+### 1. Clonar e instalar
 
 ```bash
 git clone https://github.com/ericluciano/zoom-mcp.git
@@ -22,33 +26,32 @@ cd zoom-mcp
 npm install
 ```
 
-## Configuração
+### 2. Criar App OAuth no Zoom Marketplace
 
-### 1. Criar App no Zoom Marketplace
+1. Acesse [marketplace.zoom.us](https://marketplace.zoom.us) com **sua conta Zoom**
+2. Clique em **Develop > Build App**
+3. Escolha o tipo **User-managed app** (OAuth)
+4. Copie o **Client ID** e **Client Secret** gerados
+5. Configure o Redirect URL para `http://localhost:4488/callback`
 
-1. Acesse [marketplace.zoom.us](https://marketplace.zoom.us)
-2. Crie um novo app do tipo **User-managed app** (OAuth)
-3. Copie o **Client ID** e **Client Secret**
-4. Configure o Redirect URL para `http://localhost:3000/callback`
-
-### 2. Variáveis de ambiente
+### 3. Configurar suas credenciais
 
 ```bash
 cp .env.example .env
-# Edite .env com seu Client ID e Client Secret
+# Abra o .env e preencha com seu Client ID e Client Secret
 ```
 
-### 3. Autenticar
+### 4. Autenticar com sua conta
 
 ```bash
 npm run auth
-# Abrirá o browser para login OAuth com sua conta Zoom
-# Tokens salvos automaticamente em tokens.json
 ```
 
-### 4. Adicionar ao Claude Desktop
+O browser abrirá automaticamente para você autorizar o app com **sua conta Zoom**. Os tokens são salvos localmente em `tokens.json` (apenas na sua máquina, nunca no repositório).
 
-`C:\Users\SeuUsuario\AppData\Roaming\Claude\claude_desktop_config.json`:
+### 5. Registrar no Claude Desktop
+
+Edite `C:\Users\SeuUsuario\AppData\Roaming\Claude\claude_desktop_config.json` e adicione:
 
 ```json
 {
@@ -65,18 +68,24 @@ npm run auth
 }
 ```
 
+> Substitua pelos valores do **seu app OAuth**. Esse arquivo fica apenas na sua máquina.
+
+### 6. Reiniciar o Claude Desktop
+
+Feche e reabra o Claude Desktop para carregar o MCP.
+
 ## Scripts
 
 | Comando | Descrição |
 |---------|-----------|
 | `npm start` | Inicia o MCP server |
-| `npm run auth` | Faz login OAuth com conta Zoom |
+| `npm run auth` | Faz login OAuth com sua conta Zoom |
 
 ## Segurança
 
-- Credenciais via variáveis de ambiente — nunca commitadas
-- `tokens.json` (cache OAuth) está no `.gitignore`
+- Credenciais via variáveis de ambiente — nunca commitadas no repositório
 - `.env` está no `.gitignore`
+- `tokens.json` (cache OAuth) está no `.gitignore`
 
 ## Licença
 
