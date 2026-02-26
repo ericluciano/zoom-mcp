@@ -1,3 +1,8 @@
 node_modules/
 tokens.json
 .env
+
+# Arquivos de teste local
+test-*.mjs
+test-*.js
+.claude/
