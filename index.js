@@ -521,8 +521,15 @@ server.tool(
     if (to_channel) body.to_channel = to_channel;
     if (to_contact) body.to_contact = to_contact;
 
-    await zoomRequest("PUT", `/chat/users/me/messages/${message_id}`, { body });
-    return { content: [{ type: "text", text: `Mensagem ${message_id} editada com sucesso.` }] };
+    try {
+      await zoomRequest("PUT", `/chat/users/me/messages/${message_id}`, { body });
+      return { content: [{ type: "text", text: `Mensagem ${message_id} editada com sucesso.` }] };
+    } catch (err) {
+      if (err.message && err.message.includes("Only the sender")) {
+        return { content: [{ type: "text", text: `Não é possível editar esta mensagem: apenas quem enviou pode editar. Verifique se a mensagem é sua.` }] };
+      }
+      throw err;
+    }
   }
 );
 
@@ -550,7 +557,7 @@ server.tool(
 
 server.tool(
   "zoom_react_message",
-  "Adiciona ou remove uma reação emoji em uma mensagem do Zoom Team Chat.",
+  "Adiciona ou remove uma reação emoji em uma mensagem do Zoom Team Chat. Nota: só funciona em mensagens que você enviou ou em canais onde você tem permissão.",
   {
     message_id: z.string().describe("ID da mensagem"),
     emoji: z.string().describe("Emoji para reagir (ex: 'thumbsup', 'heart', '+1', ou emoji Unicode)"),
@@ -563,9 +570,16 @@ server.tool(
     if (to_channel) body.to_channel = to_channel;
     if (to_contact) body.to_contact = to_contact;
 
-    await zoomRequest("PATCH", `/chat/users/me/messages/${message_id}/emoji_reactions`, { body });
-    const actionText = action === "add" ? "adicionada" : "removida";
-    return { content: [{ type: "text", text: `Reação ${emoji} ${actionText} na mensagem ${message_id}.` }] };
+    try {
+      await zoomRequest("PATCH", `/chat/users/me/messages/${message_id}/emoji_reactions`, { body });
+      const actionText = action === "add" ? "adicionada" : "removida";
+      return { content: [{ type: "text", text: `Reação ${emoji} ${actionText} na mensagem ${message_id}.` }] };
+    } catch (err) {
+      if (err.message && err.message.includes("5301")) {
+        return { content: [{ type: "text", text: `Não foi possível reagir à mensagem: erro interno do Zoom (código 5301). Isso ocorre com mensagens de outros usuários em alguns planos. Tente em outra mensagem.` }] };
+      }
+      throw err;
+    }
   }
 );
 
@@ -578,10 +592,19 @@ server.tool(
     message_id: z.string().describe("ID da mensagem principal da thread"),
     to_channel: z.string().optional().describe("ID do canal"),
     to_contact: z.string().optional().describe("Email do contato (para DMs)"),
+    from: z.string().optional().describe("Data inicial das respostas (YYYY-MM-DD). Padrão: 30 dias atrás."),
     page_size: z.number().optional().default(50).describe("Quantidade de respostas (máx 50)"),
   },
-  async ({ message_id, to_channel, to_contact, page_size }) => {
-    const query = { page_size: Math.min(page_size, 50) };
+  async ({ message_id, to_channel, to_contact, from, page_size }) => {
+    // A API do Zoom exige 'from' no formato YYYY-MM-DDTHH:mm:ssZ (sem milissegundos)
+    function toZoomDate(d) {
+      return new Date(d).toISOString().replace(/\.\d{3}Z$/, "Z");
+    }
+    const defaultFrom = toZoomDate(Date.now() - 30 * 24 * 60 * 60 * 1000);
+    const fromValue = from
+      ? (from.includes("T") ? toZoomDate(from) : toZoomDate(from + "T00:00:00Z"))
+      : defaultFrom;
+    const query = { page_size: Math.min(page_size, 50), from: fromValue };
     if (to_channel) query.to_channel = to_channel;
     if (to_contact) query.to_contact = to_contact;
 
@@ -645,27 +668,30 @@ server.tool(
 
 server.tool(
   "zoom_search_contacts",
-  "Busca contatos na empresa pelo nome ou email no Zoom.",
+  "Busca contatos na empresa pelo nome ou email no Zoom Team Chat.",
   {
     search_key: z.string().describe("Termo de busca (nome ou email)"),
-    page_size: z.number().optional().default(20).describe("Quantidade de resultados (máx 50)"),
+    page_size: z.number().optional().default(20).describe("Quantidade máxima de resultados"),
   },
   async ({ search_key, page_size }) => {
-    const data = await zoomRequest("GET", "/contacts", {
-      query: {
-        search_key,
-        type: "company",
-        page_size: Math.min(page_size, 50),
-      },
+    // Busca todos os contatos da organização e filtra localmente pelo search_key
+    const allContacts = await zoomRequestAllPages("/chat/users/me/contacts", {
+      query: { type: "company" },
+      resultKey: "contacts",
     });
 
-    const contacts = data.contacts || [];
+    const term = search_key.toLowerCase();
+    const filtered = allContacts.filter((c) => {
+      const name = (c.first_name || "" + " " + c.last_name || "" + " " + c.name || "").toLowerCase();
+      const email = (c.email || "").toLowerCase();
+      return name.includes(term) || email.includes(term);
+    }).slice(0, page_size);
 
-    if (contacts.length === 0) {
+    if (filtered.length === 0) {
       return { content: [{ type: "text", text: `Nenhum contato encontrado para "${search_key}".` }] };
     }
 
-    const formatted = contacts.map((c) => ({
+    const formatted = filtered.map((c) => ({
       id: c.id,
       email: c.email,
       name: c.first_name && c.last_name ? `${c.first_name} ${c.last_name}` : c.name || c.email,
@@ -673,7 +699,7 @@ server.tool(
     }));
 
     return {
-      content: [{ type: "text", text: `${contacts.length} resultado(s) para "${search_key}":\n\n${JSON.stringify(formatted, null, 2)}` }],
+      content: [{ type: "text", text: `${filtered.length} resultado(s) para "${search_key}":\n\n${JSON.stringify(formatted, null, 2)}` }],
     };
   }
 );
