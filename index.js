@@ -407,7 +407,7 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MENSAGENS (8 tools)
+// MENSAGENS (9 tools)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── TOOL 6: ENVIAR MENSAGEM ────────────────────────────────────────────────
@@ -456,7 +456,141 @@ server.tool(
   }
 );
 
-// ─── TOOL 7: LISTAR MENSAGENS ───────────────────────────────────────────────
+// ─── TOOL 7: ENVIAR ARQUIVO ─────────────────────────────────────────────────
+
+server.tool(
+  "zoom_send_file",
+  "Envia um arquivo (imagem, PDF, PPTX, etc) no Zoom Team Chat. Pode enviar para um canal (to_channel) ou DM para um contato (to_contact).",
+  {
+    file_path: z.string().describe("Caminho absoluto do arquivo no sistema local"),
+    to_channel: z.string().optional().describe("ID do canal destino"),
+    to_contact: z.string().optional().describe("Email do contato destino (para DM)"),
+    reply_main_message_id: z.string().optional().describe("ID da mensagem raiz para enviar como reply em thread (opcional)"),
+  },
+  async ({ file_path, to_channel, to_contact, reply_main_message_id }) => {
+    if (!to_channel && !to_contact) {
+      return { content: [{ type: "text", text: "Erro: informe to_channel (ID do canal) ou to_contact (email) como destino." }] };
+    }
+
+    const fs = await import("fs");
+    const path = await import("path");
+
+    if (!fs.default.existsSync(file_path)) {
+      return { content: [{ type: "text", text: `Arquivo não encontrado: ${file_path}` }] };
+    }
+
+    const fileName = path.default.basename(file_path);
+    const fileBuffer = fs.default.readFileSync(file_path);
+    const fileSize = fileBuffer.length;
+
+    // Detectar MIME type pela extensão
+    const ext = path.default.extname(fileName).toLowerCase();
+    const mimeTypes = {
+      ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+      ".gif": "image/gif", ".webp": "image/webp", ".bmp": "image/bmp",
+      ".pdf": "application/pdf",
+      ".pptx": "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ".ppt": "application/vnd.ms-powerpoint",
+      ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      ".doc": "application/msword",
+      ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      ".xls": "application/vnd.ms-excel",
+      ".txt": "text/plain", ".csv": "text/csv",
+      ".zip": "application/zip", ".mp4": "video/mp4",
+      ".mp3": "audio/mpeg", ".wav": "audio/wav",
+    };
+    const mimeType = mimeTypes[ext] || "application/octet-stream";
+
+    // Montar FormData manualmente (multipart/form-data)
+    const boundary = `----ZoomMCPBoundary${Date.now()}`;
+    const CRLF = "\r\n";
+
+    const parts = [];
+
+    // Campo: to_channel ou to_contact
+    if (to_channel) {
+      parts.push(
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="to_channel"${CRLF}${CRLF}` +
+        `${to_channel}`
+      );
+    }
+    if (to_contact) {
+      parts.push(
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="to_contact"${CRLF}${CRLF}` +
+        `${to_contact}`
+      );
+    }
+    if (reply_main_message_id) {
+      parts.push(
+        `--${boundary}${CRLF}` +
+        `Content-Disposition: form-data; name="reply_main_message_id"${CRLF}${CRLF}` +
+        `${reply_main_message_id}`
+      );
+    }
+
+    // Montar buffer completo do body
+    const textPart = parts.join(CRLF) + CRLF;
+    const filePart =
+      `--${boundary}${CRLF}` +
+      `Content-Disposition: form-data; name="files"; filename="${fileName}"${CRLF}` +
+      `Content-Type: ${mimeType}${CRLF}${CRLF}`;
+    const endPart = `${CRLF}--${boundary}--${CRLF}`;
+
+    const body = Buffer.concat([
+      Buffer.from(textPart, "utf-8"),
+      Buffer.from(filePart, "utf-8"),
+      fileBuffer,
+      Buffer.from(endPart, "utf-8"),
+    ]);
+
+    const accessToken = await getAccessToken();
+    const url = `${BASE_URL}/chat/users/me/messages/files`;
+
+    let response;
+    try {
+      response = await fetch(url, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+        },
+        body,
+      });
+    } catch (err) {
+      return { content: [{ type: "text", text: `Erro de conexão ao enviar arquivo: ${err.message}` }] };
+    }
+
+    if (!response.ok) {
+      let errDetail = "";
+      try {
+        const errJson = await response.json();
+        errDetail = errJson.message || errJson.error || JSON.stringify(errJson);
+      } catch {
+        errDetail = await response.text().catch(() => "");
+      }
+      return { content: [{ type: "text", text: `Erro HTTP ${response.status} ao enviar arquivo: ${errDetail}` }] };
+    }
+
+    const data = await response.json().catch(() => ({}));
+    const dest = to_channel ? `canal ${to_channel}` : `contato ${to_contact}`;
+    const sizeKB = (fileSize / 1024).toFixed(1);
+
+    return {
+      content: [{
+        type: "text",
+        text:
+          `✅ Arquivo enviado com sucesso!\n\n` +
+          `**Arquivo:** ${fileName} (${sizeKB} KB)\n` +
+          `**Destino:** ${dest}\n` +
+          (data.id ? `**ID da mensagem:** ${data.id}` : ""),
+      }],
+    };
+  }
+);
+
+// ─── TOOL 8: LISTAR MENSAGENS ───────────────────────────────────────────────
 
 server.tool(
   "zoom_list_messages",
