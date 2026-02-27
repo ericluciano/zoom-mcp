@@ -407,7 +407,7 @@ server.tool(
 );
 
 // ═══════════════════════════════════════════════════════════════════════════════
-// MENSAGENS (7 tools)
+// MENSAGENS (8 tools)
 // ═══════════════════════════════════════════════════════════════════════════════
 
 // ─── TOOL 6: ENVIAR MENSAGEM ────────────────────────────────────────────────
@@ -431,11 +431,28 @@ server.tool(
     if (to_contact) body.to_contact = to_contact;
     if (reply_main_message_id) body.reply_main_message_id = reply_main_message_id;
 
-    const data = await zoomRequest("POST", "/chat/users/me/messages", { body });
-    const dest = to_channel ? `canal ${to_channel}` : `contato ${to_contact}`;
-    let msg = `Mensagem enviada para ${dest}.`;
-    if (data.id) msg += ` ID: ${data.id}`;
-    return { content: [{ type: "text", text: msg }] };
+    try {
+      const data = await zoomRequest("POST", "/chat/users/me/messages", { body });
+      const dest = to_channel ? `canal ${to_channel}` : `contato ${to_contact}`;
+      let msg = `Mensagem enviada para ${dest}.`;
+      if (data.id) msg += ` ID: ${data.id}`;
+      if (reply_main_message_id) msg += ` (reply na thread de ${reply_main_message_id})`;
+      return { content: [{ type: "text", text: msg }] };
+    } catch (err) {
+      // Erro de reply: a mensagem pode ser uma reply (não main) ou de outro canal
+      if (reply_main_message_id && err.message && (err.message.includes("main message") || err.message.includes("does not exist"))) {
+        return {
+          content: [{
+            type: "text",
+            text:
+              `Erro ao responder na thread: o ID "${reply_main_message_id}" não é uma mensagem principal (main message).\n\n` +
+              "**Dica:** O reply_main_message_id deve ser o ID da PRIMEIRA mensagem do tópico, não de uma resposta dentro dele. " +
+              "Use zoom_get_message para verificar se a mensagem tem o campo reply_main_message_id — se tiver, use ESSE valor como destino do reply, pois é o ID da mensagem raiz."
+          }],
+        };
+      }
+      throw err;
+    }
   }
 );
 
@@ -471,13 +488,38 @@ server.tool(
       return { content: [{ type: "text", text: "Nenhuma mensagem encontrada." }] };
     }
 
-    const formatted = messages.map((m) => ({
-      id: m.id,
-      sender: m.sender || m.sender_display_name || "N/A",
-      message: m.message || "",
-      date_time: m.date_time || "",
-      timestamp: m.timestamp || "",
-    }));
+    const formatted = messages.map((m) => {
+      const entry = {
+        id: m.id,
+        sender: m.sender || m.sender_display_name || "N/A",
+        message: m.message || "",
+        date_time: m.date_time || "",
+        timestamp: m.timestamp || "",
+      };
+      // Thread: indicar se é reply e de qual mensagem
+      if (m.reply_main_message_id) {
+        entry.reply_main_message_id = m.reply_main_message_id;
+      }
+      // Tipo da mensagem (text, file_and_text, etc)
+      if (m.message_type && m.message_type !== "text") {
+        entry.message_type = m.message_type;
+      }
+      // Arquivos/imagens anexados
+      if (m.files && m.files.length > 0) {
+        entry.files = m.files.map((f) => ({
+          file_id: f.file_id,
+          file_name: f.file_name,
+          file_size: f.file_size,
+        }));
+      } else if (m.file_id) {
+        entry.files = [{
+          file_id: m.file_id,
+          file_name: m.file_name || "N/A",
+          file_size: m.file_size || 0,
+        }];
+      }
+      return entry;
+    });
 
     return {
       content: [{ type: "text", text: `${messages.length} mensagem(ns):\n\n${JSON.stringify(formatted, null, 2)}` }],
@@ -615,15 +657,156 @@ server.tool(
       return { content: [{ type: "text", text: "Nenhuma resposta encontrada nesta thread." }] };
     }
 
-    const formatted = replies.map((m) => ({
-      id: m.id,
-      sender: m.sender || m.sender_display_name || "N/A",
-      message: m.message || "",
-      date_time: m.date_time || "",
-    }));
+    const formatted = replies.map((m) => {
+      const entry = {
+        id: m.id,
+        sender: m.sender || m.sender_display_name || "N/A",
+        message: m.message || "",
+        date_time: m.date_time || "",
+      };
+      if (m.message_type && m.message_type !== "text") {
+        entry.message_type = m.message_type;
+      }
+      if (m.files && m.files.length > 0) {
+        entry.files = m.files.map((f) => ({
+          file_id: f.file_id,
+          file_name: f.file_name,
+          file_size: f.file_size,
+        }));
+      }
+      return entry;
+    });
 
     return {
       content: [{ type: "text", text: `${replies.length} resposta(s) na thread:\n\n${JSON.stringify(formatted, null, 2)}` }],
+    };
+  }
+);
+
+// ─── TOOL 13: BAIXAR ARQUIVO/IMAGEM ────────────────────────────────────────
+
+server.tool(
+  "zoom_download_file",
+  "Baixa um arquivo ou imagem de uma mensagem do Zoom Team Chat. Retorna a imagem inline (para visualização) ou informações do arquivo baixado. Use zoom_get_message ou zoom_list_messages para obter o message_id de mensagens com arquivos.",
+  {
+    message_id: z.string().describe("ID da mensagem que contém o arquivo"),
+    to_channel: z.string().optional().describe("ID do canal onde está a mensagem"),
+    to_contact: z.string().optional().describe("Email do contato (para DMs)"),
+    file_index: z.number().optional().default(0).describe("Índice do arquivo (0 = primeiro). Usar quando a mensagem tem múltiplos arquivos."),
+  },
+  async ({ message_id, to_channel, to_contact, file_index }) => {
+    // 1. Buscar detalhes da mensagem para obter download_url
+    const query = {};
+    if (to_channel) query.to_channel = to_channel;
+    if (to_contact) query.to_contact = to_contact;
+
+    const msgData = await zoomRequest("GET", `/chat/users/me/messages/${message_id}`, { query });
+
+    // 2. Extrair arquivo
+    let file = null;
+    if (msgData.files && msgData.files.length > 0) {
+      if (file_index >= msgData.files.length) {
+        return {
+          content: [{
+            type: "text",
+            text: `A mensagem tem ${msgData.files.length} arquivo(s), mas você pediu o índice ${file_index}. Use um índice entre 0 e ${msgData.files.length - 1}.`
+          }],
+        };
+      }
+      file = msgData.files[file_index];
+    } else if (msgData.download_url) {
+      file = {
+        file_id: msgData.file_id || "unknown",
+        file_name: msgData.file_name || "arquivo",
+        file_size: msgData.file_size || 0,
+        download_url: msgData.download_url,
+      };
+    }
+
+    if (!file || !file.download_url) {
+      return {
+        content: [{
+          type: "text",
+          text: "Esta mensagem não contém arquivos para download.\n\nCampos encontrados: " + JSON.stringify(Object.keys(msgData))
+        }],
+      };
+    }
+
+    // 3. Baixar o arquivo (a URL já contém JWT de autenticação)
+    let response;
+    try {
+      response = await fetch(file.download_url, {
+        headers: {
+          Authorization: `Bearer ${await getAccessToken()}`,
+        },
+        redirect: "follow",
+      });
+    } catch (err) {
+      return {
+        content: [{
+          type: "text",
+          text: `Erro ao baixar o arquivo: ${err.message}\n\nURL: ${file.download_url.substring(0, 100)}...`
+        }],
+      };
+    }
+
+    if (!response.ok) {
+      return {
+        content: [{
+          type: "text",
+          text: `Erro HTTP ${response.status} ao baixar o arquivo "${file.file_name}".`
+        }],
+      };
+    }
+
+    const contentType = response.headers.get("content-type") || "";
+    const buffer = Buffer.from(await response.arrayBuffer());
+
+    // 4. Se for imagem, retornar inline para visualização
+    const isImage = contentType.startsWith("image/") ||
+      /\.(png|jpg|jpeg|gif|webp|bmp|svg)$/i.test(file.file_name);
+
+    if (isImage) {
+      const mimeType = contentType.startsWith("image/")
+        ? contentType.split(";")[0]
+        : "image/png";
+
+      return {
+        content: [
+          {
+            type: "text",
+            text: `📎 **${file.file_name}** (${(file.file_size / 1024).toFixed(1)} KB)\nDe: ${msgData.sender_display_name || msgData.sender || "N/A"}\nData: ${msgData.date_time || "N/A"}`,
+          },
+          {
+            type: "image",
+            data: buffer.toString("base64"),
+            mimeType,
+          },
+        ],
+      };
+    }
+
+    // 5. Arquivo não-imagem: salvar em temp e retornar info
+    const os = await import("os");
+    const fs = await import("fs");
+    const path = await import("path");
+    const tempDir = os.default.tmpdir();
+    const safeName = file.file_name.replace(/[<>:"/\\|?*]/g, "_");
+    const tempPath = path.default.join(tempDir, `zoom_${file.file_id}_${safeName}`);
+    fs.default.writeFileSync(tempPath, buffer);
+
+    return {
+      content: [{
+        type: "text",
+        text:
+          `📎 Arquivo baixado com sucesso!\n\n` +
+          `**Nome:** ${file.file_name}\n` +
+          `**Tamanho:** ${(file.file_size / 1024).toFixed(1)} KB\n` +
+          `**Tipo:** ${contentType || "desconhecido"}\n` +
+          `**Salvo em:** ${tempPath}\n` +
+          `**De:** ${msgData.sender_display_name || msgData.sender || "N/A"}\n` +
+          `**Data:** ${msgData.date_time || "N/A"}`
+      }],
     };
   }
 );
@@ -632,7 +815,7 @@ server.tool(
 // CONTATOS E SESSÕES (3 tools)
 // ═══════════════════════════════════════════════════════════════════════════════
 
-// ─── TOOL 13: LISTAR CONTATOS ───────────────────────────────────────────────
+// ─── TOOL 14: LISTAR CONTATOS ──────────────────────────────────────────────
 
 server.tool(
   "zoom_list_contacts",
@@ -664,7 +847,7 @@ server.tool(
   }
 );
 
-// ─── TOOL 14: BUSCAR CONTATOS ───────────────────────────────────────────────
+// ─── TOOL 15: BUSCAR CONTATOS ───────────────────────────────────────────────
 
 server.tool(
   "zoom_search_contacts",
@@ -704,7 +887,7 @@ server.tool(
   }
 );
 
-// ─── TOOL 15: LISTAR SESSÕES/CONVERSAS ──────────────────────────────────────
+// ─── TOOL 16: LISTAR SESSÕES/CONVERSAS ──────────────────────────────────────
 
 server.tool(
   "zoom_list_sessions",
