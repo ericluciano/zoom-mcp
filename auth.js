@@ -54,6 +54,9 @@ const SCOPES = [
   "team_chat:read:list_user_sessions",
   // Emojis customizados
   "team_chat:read:list_custom_emojis",
+  // Arquivos
+  "team_chat:write:files",
+  "team_chat:write:message_files",
   // Usuário
   "user:read:user",
   "user:read:email",

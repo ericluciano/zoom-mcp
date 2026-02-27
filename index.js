@@ -501,52 +501,19 @@ server.tool(
     };
     const mimeType = mimeTypes[ext] || "application/octet-stream";
 
-    // Montar FormData manualmente (multipart/form-data)
-    const boundary = `----ZoomMCPBoundary${Date.now()}`;
-    const CRLF = "\r\n";
-
-    const parts = [];
-
-    // Campo: to_channel ou to_contact
-    if (to_channel) {
-      parts.push(
-        `--${boundary}${CRLF}` +
-        `Content-Disposition: form-data; name="to_channel"${CRLF}${CRLF}` +
-        `${to_channel}`
-      );
-    }
-    if (to_contact) {
-      parts.push(
-        `--${boundary}${CRLF}` +
-        `Content-Disposition: form-data; name="to_contact"${CRLF}${CRLF}` +
-        `${to_contact}`
-      );
-    }
-    if (reply_main_message_id) {
-      parts.push(
-        `--${boundary}${CRLF}` +
-        `Content-Disposition: form-data; name="reply_main_message_id"${CRLF}${CRLF}` +
-        `${reply_main_message_id}`
-      );
-    }
-
-    // Montar buffer completo do body
-    const textPart = parts.join(CRLF) + CRLF;
-    const filePart =
-      `--${boundary}${CRLF}` +
-      `Content-Disposition: form-data; name="files"; filename="${fileName}"${CRLF}` +
-      `Content-Type: ${mimeType}${CRLF}${CRLF}`;
-    const endPart = `${CRLF}--${boundary}--${CRLF}`;
-
-    const body = Buffer.concat([
-      Buffer.from(textPart, "utf-8"),
-      Buffer.from(filePart, "utf-8"),
-      fileBuffer,
-      Buffer.from(endPart, "utf-8"),
-    ]);
+    // Usar FormData nativo (Node 18+) — mais confiável que multipart manual
+    const formData = new FormData();
+    const blob = new Blob([fileBuffer], { type: mimeType });
+    formData.append("files", blob, fileName);
+    if (to_channel) formData.append("to_channel", to_channel);
+    if (to_contact) formData.append("to_contact", to_contact);
+    if (reply_main_message_id) formData.append("reply_main_message_id", reply_main_message_id);
 
     const accessToken = await getAccessToken();
-    const url = `${BASE_URL}/chat/users/me/messages/files`;
+    // Buscar userId real pois /me pode não funcionar neste endpoint
+    const meData = await zoomRequest("GET", "/users/me");
+    const userId = meData.id || "me";
+    const url = `${BASE_URL}/chat/users/${userId}/messages/files`;
 
     let response;
     try {
@@ -554,9 +521,9 @@ server.tool(
         method: "POST",
         headers: {
           Authorization: `Bearer ${accessToken}`,
-          "Content-Type": `multipart/form-data; boundary=${boundary}`,
+          // Não setar Content-Type manualmente — o fetch seta automaticamente com boundary correto
         },
-        body,
+        body: formData,
       });
     } catch (err) {
       return { content: [{ type: "text", text: `Erro de conexão ao enviar arquivo: ${err.message}` }] };
